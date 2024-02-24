@@ -1,0 +1,27 @@
+{
+	"Years": {
+		"2020": 10,
+		"2030": 10
+	},
+	"Days": {
+		"Winter": 183,
+		"Summer": 182
+	},
+	"NumInstants": 24,
+	"DiscountFactor": 0.02,
+	"CandidateNodes": [6, 8, 9, 4],
+	"MarketData": "HR3_market_data",	
+	"Network": {
+		"name": "Location3",
+		"params_file": "Location3_params.json"
+	},
+	"PlanningParameters": {
+		"params_file": "HR3_params.json"
+	},
+	"EnergyStorageParameters": {
+		"params_file": "HR3_ess_params.json"
+	},
+	"EnergyStorageInvestmentCosts": {
+		"costs_file": "HR3_invesment_costs.xlsx"
+	}
+}

@@ -1,0 +1,19 @@
+{
+	"budget": 100e3,
+	"max_capacity": 2.50,
+	"min_se_factor": 0.10,
+	"max_se_factor": 4.00,
+	"eff_ch": 0.90,
+	"eff_dch": 0.90,
+	"max_pf": 0.80,
+	"min_pf": -0.80,
+	"tcal": 20,
+	"cl_nom": 3650,
+	"dod_nom": 0.80,
+	"solver": {
+		"name": "ipopt",
+		"linear_solver": "ma57",
+		"solver_tol": 1e-6,
+		"verbose": false
+	}
+}
