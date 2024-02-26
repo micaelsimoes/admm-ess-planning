@@ -1,5 +1,4 @@
 {
-	"tol_abs": 5e3,
-	"tol_rel": 5e-2,
+	"tol": 5e-3,
 	"num_max_iters": 1000
 }

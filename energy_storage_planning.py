@@ -62,6 +62,9 @@ class EnergyStoragePlanning:
     def compute_subproblems_primal_value(self, subproblem_models):
         return _compute_subproblems_primal_value(self, subproblem_models)
 
+    def check_admm_convergence(self, consensus_vars, consensus_vars_prev_iter):
+        return _check_admm_convergence(self, consensus_vars, consensus_vars_prev_iter)
+
     def get_candidate_solution(self, master_problem_model):
         years = [year for year in self.years]
         candidate_solution = {'investment': {}, 'total_capacity': {}}
@@ -285,8 +288,8 @@ def _update_consensus_variables(planning_problem, master_problem_model, subprobl
 
             dual_vars['master_problem'][node_id][year]['s'] += planning_problem.params.rho_s * (error_s_rated)
             dual_vars['master_problem'][node_id][year]['e'] += planning_problem.params.rho_e * (error_e_rated)
-            dual_vars['master_problem'][node_id][year]['s'] += planning_problem.params.rho_s * (-error_s_rated)
-            dual_vars['master_problem'][node_id][year]['e'] += planning_problem.params.rho_e * (-error_e_rated)
+            dual_vars['subproblem'][node_id][year]['s'] += planning_problem.params.rho_s * (-error_s_rated)
+            dual_vars['subproblem'][node_id][year]['e'] += planning_problem.params.rho_e * (-error_e_rated)
 
 
 def update_subproblems_to_admm(planning_problem, subproblem_models):
@@ -344,7 +347,6 @@ def update_subproblems_and_solve(planning_problem, subproblem_models, ess_req, d
     # Solve!
     res = planning_problem.network.run_operational_planning_problem(subproblem_models)
     return res
-
 
 
 def update_master_problem_to_admm(planning_problem, master_problem_model):
@@ -594,6 +596,83 @@ def create_admm_variables(planning_problem):
             consensus_variables_prev_iter['subproblem'][node_id][year] = {'s': 0.00, 'e': 0.00}
 
     return consensus_variables, dual_variables, consensus_variables_prev_iter
+
+
+def _check_admm_convergence(planning_problem, consensus_vars, consensus_vars_prev_iter):
+    if _consensus_convergence(planning_problem, consensus_vars):
+        if _stationary_convergence(planning_problem, consensus_vars, consensus_vars_prev_iter):
+            return True
+    return False
+
+
+def _consensus_convergence(planning_problem, consensus_vars):
+
+    sum_abs = 0.0
+    num_elems = 0
+
+    for year in planning_problem.years:
+        for node_id in planning_problem.candidate_nodes:
+            sum_abs += abs(round(consensus_vars['master_problem'][node_id][year]['s'], ERROR_PRECISION) - round(consensus_vars['subproblem'][node_id][year]['s'], ERROR_PRECISION))
+            sum_abs += abs(round(consensus_vars['master_problem'][node_id][year]['e'], ERROR_PRECISION) - round(consensus_vars['subproblem'][node_id][year]['e'], ERROR_PRECISION))
+            num_elems += 2
+
+    if sum_abs > planning_problem.params.tol * num_elems:
+        if not isclose(sum_abs, planning_problem.params.tol, rel_tol=ADMM_CONVERGENCE_REL_TOL, abs_tol=planning_problem.params.tol):
+            print('[INFO]\t\t - Convergence consensus constraints failed. {:.3f} > {:.3f}'.format(sum_abs, planning_problem.params.tol * num_elems))
+            return False
+        print('[INFO]\t\t - Convergence consensus constraints considered ok. {:.3f} ~= {:.3f}'.format(sum_abs, planning_problem.params.tol * num_elems))
+        return True
+
+    print('[INFO]\t\t - Convergence consensus constraints ok. {:.3f} <= {:.3f}'.format(sum_abs, planning_problem.params.tol * num_elems))
+    return True
+
+
+def _stationary_convergence(planning_problem, consensus_vars, consensus_vars_prev_iter):
+
+    rho_pf_tso = params.rho['pf'][planning_problem.transmission_network.name]
+    rho_ess_tso = params.rho['ess'][planning_problem.transmission_network.name]
+    interface_vars = consensus_vars['interface']['pf']
+    shared_ess_vars = consensus_vars['ess']
+    interface_vars_prev_iter = consensus_vars_prev_iter['interface']['pf']
+    shared_ess_vars_prev_iter = consensus_vars_prev_iter['ess']
+    sum_abs = 0.0
+    num_elems = 0
+
+    # Interface Power Flow
+    for node_id in planning_problem.distribution_networks:
+        rho_pf_dso = params.rho['pf'][planning_problem.distribution_networks[node_id].name]
+        for year in planning_problem.years:
+            for day in planning_problem.days:
+                for p in range(planning_problem.num_instants):
+                    sum_abs += rho_pf_tso * abs(round(interface_vars['tso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['tso'][node_id][year][day]['p'][p], ERROR_PRECISION))
+                    sum_abs += rho_pf_tso * abs(round(interface_vars['tso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['tso'][node_id][year][day]['q'][p], ERROR_PRECISION))
+                    sum_abs += rho_pf_dso * abs(round(interface_vars['dso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['dso'][node_id][year][day]['p'][p], ERROR_PRECISION))
+                    sum_abs += rho_pf_dso * abs(round(interface_vars['dso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['dso'][node_id][year][day]['q'][p], ERROR_PRECISION))
+                    num_elems += 4
+
+    # Shared Energy Storage
+    for node_id in planning_problem.distribution_networks:
+        distribution_network = planning_problem.distribution_networks[node_id]
+        rho_ess_dso = params.rho['ess'][distribution_network.name]
+        for year in planning_problem.years:
+            for day in planning_problem.days:
+                for p in range(planning_problem.num_instants):
+                    sum_abs += rho_ess_tso * abs(round(shared_ess_vars['tso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['tso'][node_id][year][day]['p'][p], ERROR_PRECISION))
+                    sum_abs += rho_ess_tso * abs(round(shared_ess_vars['tso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['tso'][node_id][year][day]['q'][p], ERROR_PRECISION))
+                    sum_abs += rho_ess_dso * abs(round(shared_ess_vars['dso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['dso'][node_id][year][day]['p'][p], ERROR_PRECISION))
+                    sum_abs += rho_ess_dso * abs(round(shared_ess_vars['dso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['dso'][node_id][year][day]['q'][p], ERROR_PRECISION))
+                    num_elems += 4
+
+    if sum_abs > params.tol * num_elems:
+        if not isclose(sum_abs, params.tol * num_elems, rel_tol=ADMM_CONVERGENCE_REL_TOL, abs_tol=params.tol):
+            print('[INFO]\t\t - Convergence stationary constraints failed. {:.3f} > {:.3f}'.format(sum_abs, params.tol * num_elems))
+            return False
+        print('[INFO]\t\t - Convergence stationary constraints considered ok. {:.3f} ~= {:.3f}'.format(sum_abs, params.tol * num_elems))
+        return True
+
+    print('[INFO]\t\t - Convergence stationary constraints ok. {:.3f} <= {:.3f}'.format(sum_abs, params.tol * num_elems))
+    return True
+
 
 
 # ======================================================================================================================
