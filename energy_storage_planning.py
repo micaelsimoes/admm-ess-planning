@@ -618,7 +618,9 @@ def _consensus_convergence(planning_problem, consensus_vars):
         for node_id in planning_problem.candidate_nodes:
             sum_abs += abs(round(consensus_vars['master_problem'][node_id][year]['s'], ERROR_PRECISION) - round(consensus_vars['subproblem'][node_id][year]['s'], ERROR_PRECISION))
             sum_abs += abs(round(consensus_vars['master_problem'][node_id][year]['e'], ERROR_PRECISION) - round(consensus_vars['subproblem'][node_id][year]['e'], ERROR_PRECISION))
-            num_elems += 2
+            sum_abs += abs(round(consensus_vars['subproblem'][node_id][year]['s'], ERROR_PRECISION) - round(consensus_vars['master_problem'][node_id][year]['s'], ERROR_PRECISION))
+            sum_abs += abs(round(consensus_vars['subproblem'][node_id][year]['e'], ERROR_PRECISION) - round(consensus_vars['master_problem'][node_id][year]['e'], ERROR_PRECISION))
+            num_elems += 4
 
     if sum_abs > planning_problem.params.tol * num_elems:
         if not isclose(sum_abs, planning_problem.params.tol, rel_tol=ADMM_CONVERGENCE_REL_TOL, abs_tol=planning_problem.params.tol):
