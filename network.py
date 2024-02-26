@@ -486,7 +486,8 @@ def _build_model(network, candidate_nodes, params, ess_params=dict()):
                             model.energy_storage_ch_dch_exclusion.add(sch * sdch >= -SMALL_TOLERANCE)   # Note: helps with convergence
                             model.energy_storage_ch_dch_exclusion.add(sch * sdch <= SMALL_TOLERANCE)
 
-                    model.energy_storage_day_balance.add(model.es_soc[e, s_m, s_o, len(model.periods) - 1] <= soc_final)
+                    model.energy_storage_day_balance.add(model.es_soc[e, s_m, s_o, len(model.periods) - 1] - soc_final >= -SMALL_TOLERANCE)
+                    model.energy_storage_day_balance.add(model.es_soc[e, s_m, s_o, len(model.periods) - 1] - soc_final <= SMALL_TOLERANCE)
 
     # - Shared Energy Storage constraints
     model.energy_storage_planning_balance = pe.ConstraintList()
@@ -560,7 +561,8 @@ def _build_model(network, candidate_nodes, params, ess_params=dict()):
                         model.energy_storage_planning_ch_dch_exclusion.add(sch * sdch >= -SMALL_TOLERANCE)
                         model.energy_storage_planning_ch_dch_exclusion.add(sch * sdch <= SMALL_TOLERANCE)
 
-                model.energy_storage_planning_day_balance.add(model.es_planning_soc[e, s_m, s_o, len(model.periods) - 1] <= soc_final)
+                model.energy_storage_planning_day_balance.add(model.es_planning_soc[e, s_m, s_o, len(model.periods) - 1] - soc_final >= -SMALL_TOLERANCE)
+                model.energy_storage_planning_day_balance.add(model.es_planning_soc[e, s_m, s_o, len(model.periods) - 1] - soc_final <= SMALL_TOLERANCE)
 
     # - Node Balance constraints
     model.node_balance_cons_p = pe.ConstraintList()
