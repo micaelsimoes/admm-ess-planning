@@ -290,10 +290,8 @@ def _update_consensus_variables(planning_problem, master_problem_model, subprobl
     # Update Lambdas
     for node_id in planning_problem.candidate_nodes:
         for year in planning_problem.years:
-
             error_s_rated = consensus_vars['master_problem'][node_id][year]['s'] - consensus_vars['subproblem'][node_id][year]['s']
             error_e_rated = consensus_vars['master_problem'][node_id][year]['e'] - consensus_vars['subproblem'][node_id][year]['e']
-
             dual_vars['master_problem'][node_id][year]['s'] += planning_problem.params.rho_s * (error_s_rated)
             dual_vars['master_problem'][node_id][year]['e'] += planning_problem.params.rho_e * (error_e_rated)
             dual_vars['subproblem'][node_id][year]['s'] += planning_problem.params.rho_s * (-error_s_rated)
@@ -361,7 +359,6 @@ def update_subproblems_and_solve(planning_problem, subproblem_models, ess_req, d
 def update_master_problem_to_admm(planning_problem, master_problem_model):
 
     init_of_value = planning_problem.ess_params.budget
-    years = [year for year in planning_problem.years]
     e_max = planning_problem.ess_params.max_capacity
     s_max = e_max * planning_problem.ess_params.max_se_factor
 
@@ -382,9 +379,8 @@ def update_master_problem_to_admm(planning_problem, master_problem_model):
     # Augmented Lagrangian -- Srated and Erated (residual balancing)
     for e in master_problem_model.energy_storages:
         for y in master_problem_model.years:
-            annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(years[y]) - int(years[0])))
-            constraint_s_req = years[y] * 365.00 * annualization * (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
-            constraint_e_req = years[y] * 365.00 * annualization * (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max)
+            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
+            constraint_e_req = (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max)
             obj += (master_problem_model.dual_es_s_rated[e, y]) * (constraint_s_req)
             obj += (master_problem_model.dual_es_e_rated[e, y]) * (constraint_e_req)
             obj += (master_problem_model.rho_s / 2) * constraint_s_req ** 2
@@ -402,8 +398,10 @@ def update_master_problem_and_solve(planning_problem, master_problem_model, ess_
         node_id = planning_problem.candidate_nodes[e]
         for y in master_problem_model.years:
             year = years[y]
-            master_problem_model.dual_es_s_rated[e, y].fix(dual_ess[node_id][year]['s'])
-            master_problem_model.dual_es_e_rated[e, y].fix(dual_ess[node_id][year]['e'])
+            num_years = planning_problem.years[year]
+            annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
+            master_problem_model.dual_es_s_rated[e, y].fix(dual_ess[node_id][year]['s'] * num_years * 365.00 * annualization)
+            master_problem_model.dual_es_e_rated[e, y].fix(dual_ess[node_id][year]['e'] * num_years * 365.00 * annualization)
             master_problem_model.es_s_rated_req[e, y].fix(ess_req[node_id][year]['s'])
             master_problem_model.es_e_rated_req[e, y].fix(ess_req[node_id][year]['e'])
 
@@ -480,9 +478,6 @@ def _build_master_problem_model(planning_problem):
             investment_cost_total += annualization * model.es_e_invesment[e, y] * c_inv_e
     model.energy_storage_investment.add(investment_cost_total <= ess_params.budget)
 
-    # Benders' cuts
-    model.benders_cuts = pe.ConstraintList()
-
     # Objective function
     investment_cost = 0.0
     for e in model.energy_storages:
@@ -491,8 +486,6 @@ def _build_master_problem_model(planning_problem):
             c_inv_s = planning_problem.investment_costs['power_capacity'][year]
             c_inv_e = planning_problem.investment_costs['energy_capacity'][year]
             annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
-
-            # Investment Cost
             investment_cost += annualization * model.es_s_invesment[e, y] * c_inv_s
             investment_cost += annualization * model.es_e_invesment[e, y] * c_inv_e
 
