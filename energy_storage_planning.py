@@ -378,11 +378,12 @@ def update_master_problem_to_admm(planning_problem, master_problem_model):
     for e in master_problem_model.energy_storages:
         for y in master_problem_model.years:
             year = years[y]
+            num_years = planning_problem.years[year]
             annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
-            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max) * annualization
+            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
             constraint_e_req = (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max) * annualization
-            obj += (master_problem_model.dual_es_s_rated[e, y]) * (constraint_s_req)
-            obj += (master_problem_model.dual_es_e_rated[e, y]) * (constraint_e_req)
+            obj += (master_problem_model.dual_es_s_rated[e, y]) * (constraint_s_req) * annualization * num_years
+            obj += (master_problem_model.dual_es_e_rated[e, y]) * (constraint_e_req) * annualization * num_years
             obj += (master_problem_model.rho_s / 2) * constraint_s_req ** 2
             obj += (master_problem_model.rho_e / 2) * constraint_e_req ** 2
 
