@@ -34,9 +34,9 @@ class Network:
         self.prob_operation_scenarios = list()          # Probability of operation (generation and consumption) scenarios
         self.cost_energy_p = list()
 
-    def build_model(self, candidate_nodes, params):
+    def build_model(self, candidate_nodes, params, ess_params=dict()):
         _pre_process_network(self)
-        return _build_model(self, candidate_nodes, params)
+        return _build_model(self, candidate_nodes, params, ess_params=ess_params)
 
     def run_smopf(self, model, params, from_warm_start=False):
         return _run_smopf(self, model, params, from_warm_start=from_warm_start)
@@ -145,7 +145,7 @@ class Network:
 # ======================================================================================================================
 #   NETWORK optimization functions
 # ======================================================================================================================
-def _build_model(network, candidate_nodes, params):
+def _build_model(network, candidate_nodes, params, ess_params=dict()):
 
     network.compute_series_admittance()
 
@@ -357,14 +357,8 @@ def _build_model(network, candidate_nodes, params):
                         model.es_qdch[e, s_m, s_o, p].setub(energy_storage.s)
                         model.es_qdch[e, s_m, s_o, p].setlb(-energy_storage.s)
 
-    model.es_planning_s_rated = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals)
-    model.es_planning_e_rated = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals)
-    model.es_planning_s_rated_fixed = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals)
-    model.es_planning_e_rated_fixed = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals)
-    model.es_planning_slack_s_up = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals, initialize=0.0)           # Benders' -- ensures feasibility of the subproblem
-    model.es_planning_slack_s_down = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals, initialize=0.0)
-    model.es_planning_slack_e_up = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals, initialize=0.0)
-    model.es_planning_slack_e_down = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals, initialize=0.0)
+    model.es_planning_s_rated = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals, initialize=0.00)
+    model.es_planning_e_rated = pe.Var(model.energy_storages_planning, domain=pe.NonNegativeReals, initialize=0.00)
     model.es_planning_soc = pe.Var(model.energy_storages_planning, model.scenarios_market, model.scenarios_operation, model.periods, domain=pe.NonNegativeReals)
     model.es_planning_sch = pe.Var(model.energy_storages_planning, model.scenarios_market, model.scenarios_operation, model.periods, domain=pe.NonNegativeReals, initialize=0.0)
     model.es_planning_pch = pe.Var(model.energy_storages_planning, model.scenarios_market, model.scenarios_operation, model.periods, domain=pe.NonNegativeReals, initialize=0.0)
@@ -374,6 +368,8 @@ def _build_model(network, candidate_nodes, params):
     model.es_planning_qdch = pe.Var(model.energy_storages_planning, model.scenarios_market, model.scenarios_operation, model.periods, domain=pe.Reals, initialize=0.0)
     if params.ess_relax:
         model.es_planning_penalty_comp_penalty = pe.Var(model.energy_storages_planning, model.scenarios_market, model.scenarios_operation, model.periods, domain=pe.NonNegativeReals, initialize=0.0)
+    for e in model.energy_storages_planning:
+        model.es_planning_e_rated[e].setub(ess_params.max_capacity / network.baseMVA)
 
     # ------------------------------------------------------------------------------------------------------------------
     # Constraints
@@ -498,8 +494,7 @@ def _build_model(network, candidate_nodes, params):
     model.energy_storage_planning_operation = pe.ConstraintList()
     model.energy_storage_planning_day_balance = pe.ConstraintList()
     model.energy_storage_planning_ch_dch_exclusion = pe.ConstraintList()
-    model.energy_storage_planning_sensitivities_s = pe.ConstraintList()
-    model.energy_storage_planning_sensitivities_e = pe.ConstraintList()
+    model.energy_storage_power_to_energy_factor = pe.ConstraintList()
     for e in model.energy_storages_planning:
 
         eff_charge = ENERGY_STORAGE_CHARGE_EFF
@@ -512,6 +507,9 @@ def _build_model(network, candidate_nodes, params):
         soc_min = model.es_planning_e_rated[e] * ENERGY_STORAGE_MIN_ENERGY_STORED
         soc_init = model.es_planning_e_rated[e] * ENERGY_STORAGE_RELATIVE_INIT_SOC
         soc_final = model.es_planning_e_rated[e] * ENERGY_STORAGE_RELATIVE_INIT_SOC
+
+        model.energy_storage_power_to_energy_factor.add(model.es_planning_s_rated[e] >= model.es_planning_e_rated[e] * ess_params.min_se_factor)
+        model.energy_storage_power_to_energy_factor.add(model.es_planning_s_rated[e] <= model.es_planning_e_rated[e] * ess_params.max_se_factor)
 
         for s_m in model.scenarios_market:
             for s_o in model.scenarios_operation:
@@ -565,10 +563,6 @@ def _build_model(network, candidate_nodes, params):
 
                 model.energy_storage_planning_day_balance.add(model.es_planning_soc[e, s_m, s_o, len(model.periods) - 1] - soc_final >= -SMALL_TOLERANCE)
                 model.energy_storage_planning_day_balance.add(model.es_planning_soc[e, s_m, s_o, len(model.periods) - 1] - soc_final <= SMALL_TOLERANCE)
-
-        # Fixing power and energy capacity
-        model.energy_storage_planning_sensitivities_s.add(model.es_planning_s_rated[e] - (model.es_planning_slack_s_up[e] - model.es_planning_slack_s_down[e]) == model.es_planning_s_rated_fixed[e])
-        model.energy_storage_planning_sensitivities_e.add(model.es_planning_e_rated[e] - (model.es_planning_slack_e_up[e] - model.es_planning_slack_e_down[e]) == model.es_planning_e_rated_fixed[e])
 
     # - Node Balance constraints
     model.node_balance_cons_p = pe.ConstraintList()
@@ -778,11 +772,6 @@ def _build_model(network, candidate_nodes, params):
 
                 obj += obj_scenario * omega_market * omega_oper
 
-        # ESS Planning -- Slack Penalty
-        for e in model.energy_storages_planning:
-            obj += PENALTY_ESS_SLACK * (model.es_planning_slack_s_up[e] + model.es_planning_slack_s_down[e])
-            obj += PENALTY_ESS_SLACK * (model.es_planning_slack_e_up[e] + model.es_planning_slack_e_down[e])
-
         model.objective = pe.Objective(sense=pe.minimize, expr=obj)
     elif params.obj_type == OBJ_CONGESTION_MANAGEMENT:
 
@@ -847,11 +836,6 @@ def _build_model(network, candidate_nodes, params):
                             obj_scenario += PENALTY_ESS_COMPLEMENTARITY * model.es_planning_penalty_comp_penalty[e, s_m, s_o, p]
 
                 obj += obj_scenario * omega_market * omega_oper
-
-        # ESS Planning -- Slack Penalty
-        for e in model.energy_storages_planning:
-            obj += PENALTY_ESS_SLACK * (model.es_planning_slack_s_up[e] + model.es_planning_slack_s_down[e])
-            obj += PENALTY_ESS_SLACK * (model.es_planning_slack_e_up[e] + model.es_planning_slack_e_down[e])
 
         model.objective = pe.Objective(sense=pe.minimize, expr=obj)
     else:

@@ -1,5 +1,6 @@
 import os
 import time
+from copy import copy
 import pandas as pd
 from math import isclose
 import pyomo.opt as po
@@ -46,60 +47,20 @@ class EnergyStoragePlanning:
     def build_master_problem_model(self):
         return _build_master_problem_model(self)
 
-    def build_subproblem_model(self):
-        return self.network.build_model()
+    def build_subproblem_model(self, ess_params=dict()):
+        return self.network.build_model(ess_params=ess_params)
 
-    def get_upper_bound(self, subproblem_model):
-        upper_bound = 0.00
-        years = [year for year in self.years]
-        for year in self.years:
-            num_years = self.years[year]
-            annualization = 1 / ((1 + self.discount_factor) ** (int(year) - int(years[0])))
-            for day in self.days:
-                num_days = self.days[day]
-                obj_repr_day = pe.value(subproblem_model[year][day].objective())
-                upper_bound += num_days * num_years * annualization * obj_repr_day
-        return upper_bound
+    def update_admm_consensus_variables(self, master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter):
+        return _update_admm_consensus_variables(self, master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
 
-    def get_lower_bound(self, master_problem_model):
-        return pe.value(master_problem_model.alpha)
+    def compute_primal_value(self, tso_model, dso_models):
+        return _compute_primal_value(self, tso_model, dso_models)
 
-    def get_sensitivities(self, subproblem_models, results):
-        sensitivities = {'s': dict(), 'e': dict()}
-        years = [year for year in self.years]
-        for year in self.years:
-            sensitivities['s'][year] = dict()
-            sensitivities['e'][year] = dict()
-            for node_id in self.candidate_nodes:
-                sensitivities['s'][year][node_id] = 0.00
-                sensitivities['e'][year][node_id] = 0.00
-        for year in self.years:
-            num_years = self.years[year]
-            annualization = 1 / ((1 + self.discount_factor) ** (int(year) - int(years[0])))
-            for day in self.days:
-                num_days = self.days[day]
-                model_repr_day = subproblem_models[year][day]
-                results_repr_day = results[year][day]
-                for c in model_repr_day.energy_storage_planning_sensitivities_s:
-                    node_id = self.candidate_nodes[c-1]         # Note: the sensitivity constraints start at "1"
-                    if results_repr_day.solver.status == po.SolverStatus.ok:
-                        sensitivity_s = model_repr_day.dual[model_repr_day.energy_storage_planning_sensitivities_s[c]]
-                        if sensitivities['s'][year][node_id] == 'N/A':
-                            sensitivities['s'][year][node_id] = num_days * sensitivity_s
-                        else:
-                            sensitivities['s'][year][node_id] += num_days * sensitivity_s
-                for c in model_repr_day.energy_storage_planning_sensitivities_e:
-                    node_id = self.candidate_nodes[c-1]         # Note: the sensitivity constraints start at "1"
-                    if results_repr_day.solver.status == po.SolverStatus.ok:
-                        sensitivity_e = model_repr_day.dual[model_repr_day.energy_storage_planning_sensitivities_e[c]]
-                        if sensitivities['e'][year][node_id] == 'N/A':
-                            sensitivities['e'][year][node_id] = num_days * sensitivity_e
-                        else:
-                            sensitivities['e'][year][node_id] += num_days * sensitivity_e
-            sensitivities['s'][year][node_id] *= num_years * annualization
-            sensitivities['e'][year][node_id] *= num_years * annualization
+    def compute_master_problem_primal_value(self, master_problem_model):
+        return _compute_master_problem_primal_value(self, master_problem_model)
 
-        return sensitivities
+    def compute_subproblems_primal_value(self, subproblem_models):
+        return _compute_subproblems_primal_value(self, subproblem_models)
 
     def get_candidate_solution(self, master_problem_model):
         years = [year for year in self.years]
@@ -143,9 +104,6 @@ class EnergyStoragePlanning:
                     models[year][day].es_planning_s_rated_fixed[e].fix(candidate_solution[year][node_id]['s'] / s_base)
                     models[year][day].es_planning_e_rated_fixed[e].fix(candidate_solution[year][node_id]['e'] / s_base)
 
-    def add_benders_cut(self, model, upper_bound, sensitivities, candidate_solution):
-        _add_benders_cut(self, model, upper_bound, sensitivities, candidate_solution)
-
     def read_planning_problem(self):
         _read_planning_problem(self)
 
@@ -182,78 +140,263 @@ class EnergyStoragePlanning:
 # ======================================================================================================================
 def _run_planning_problem(planning_problem):
 
-    subproblem_model = planning_problem.build_subproblem_model()
-    master_problem_model = planning_problem.build_master_problem_model()
+    years = [year for year in planning_problem.years]
+    days = [day for day in planning_problem.days]
+    results = dict()
 
     # ------------------------------------------------------------------------------------------------------------------
     # 0. Initialization
-    iter = 1
-    convergence = False
-    lower_bound = -1e12
-    upper_bound = 1e12
-    lower_bound_evolution = [lower_bound]
-    upper_bound_evolution = [upper_bound]
-    candidate_solution = planning_problem.get_initial_candidate_solution()
-
+    print('[INFO]\t - Initializing...')
     start = time.time()
-    from_warm_start = False
+    primal_evolution = list()
 
-    # Benders' main cycle
-    while iter < 100 and not convergence:
+    # ------------------------------------------------------------------------------------------------------------------
+    # 0. Initialization
+    # - ADMM variables
+    consensus_vars, dual_vars, consensus_vars_prev_iter = create_admm_variables(planning_problem)
 
-        print(f'=============================================== ITERATION #{iter} ==============================================')
-        print('[INFO] Iter {}. LB = {:.3f}, UB = {:.3f}'.format(iter, lower_bound, upper_bound))
-        _print_candidate_solution(candidate_solution)
+    # - Create subproblem models, warm start, update to ADMM
+    subproblem_models = planning_problem.build_subproblem_model(ess_params=planning_problem.ess_params)
+    planning_problem.network.run_operational_planning_problem(subproblem_models)    # Warm start
+    for e in range(len(planning_problem.candidate_nodes)):
+        node_id = planning_problem.candidate_nodes[e]
+        for year in years:
+            s_rated_year = 0.00
+            e_rated_year = 0.00
+            for day in days:
+                num_days = planning_problem.days[day]
+                s_base = planning_problem.network.network[year][day].baseMVA
+                s_rated_year += pe.value(subproblem_models[year][day].es_planning_s_rated[e]) * s_base * (num_days / 365.00)
+                e_rated_year += pe.value(subproblem_models[year][day].es_planning_e_rated[e]) * s_base * (num_days / 365.00)
+            consensus_vars['subproblem'][node_id][year]['s'] = s_rated_year
+            consensus_vars['subproblem'][node_id][year]['e'] = e_rated_year
+    update_subproblems_to_admm(planning_problem, subproblem_models)
 
-        # Solve Subproblem
-        # - Fix candidate solution,
-        # - Obtain the values of all dual variables (sensitivities), and
-        # - Obtain the value of objective function (upper bound)
-        planning_problem.update_model_with_candidate_solution(subproblem_model, candidate_solution['total_capacity'])
-        results = planning_problem.network.run_operational_planning_problem(subproblem_model, from_warm_start=from_warm_start)
-        for year in planning_problem.years:
-            for day in planning_problem.days:
-                if not results[year][day].solver.status == po.SolverStatus.ok:
-                    print(f'[WARNING] Model {subproblem_model[year][day].name} did not converge!')
-        upper_bound = planning_problem.get_upper_bound(subproblem_model)
-        upper_bound_evolution.append(upper_bound)
-        sensitivities = planning_problem.get_sensitivities(subproblem_model, results)
+    # - Create master problem models, warm start, update to ADMM
+    master_problem_model = planning_problem.build_master_problem_model()
+    planning_problem.optimize(master_problem_model)
+    for e in range(len(planning_problem.candidate_nodes)):
+        node_id = planning_problem.candidate_nodes[e]
+        for y in range(len(years)):
+            year = years[y]
+            s_rated_year = pe.value(master_problem_model.es_s_rated[e, y])
+            e_rated_year = pe.value(master_problem_model.es_e_rated[e, y])
+            consensus_vars['master_problem'][node_id][year]['s'] = s_rated_year
+            consensus_vars['master_problem'][node_id][year]['e'] = e_rated_year
+    update_master_problem_to_admm(planning_problem, master_problem_model)
 
-        # Convergence check
-        if isclose(upper_bound, lower_bound, abs_tol=planning_problem.params.tol_abs, rel_tol=planning_problem.params.tol_rel):
-            convergence = True
+    # ------------------------------------------------------------------------------------------------------------------
+    # ADMM -- Main cycle
+    # ------------------------------------------------------------------------------------------------------------------
+    convergence, num_iter = False, 1
+    for iter in range(planning_problem.params.num_max_iters):
+
+        print(f'[INFO]\t - ADMM. Iter {num_iter}...')
+
+        iter_start = time.time()
+
+        results['master_problem'] = update_master_problem_and_solve(planning_problem, master_problem_model, consensus_vars['subproblem'], dual_vars['subproblem'])
+
+        # - Update ADMM consensus variables
+        planning_problem.update_admm_consensus_variables(master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
+
+        # - Update primal evolution
+        primal_evolution.append(planning_problem.compute_primal_value(master_problem_model, subproblem_models))
+
+        # - Stopping criteria evaluation
+        if iter > 1:
+            convergence = planning_problem.check_admm_convergence(consensus_vars, consensus_vars_prev_iter)
+            if convergence:
+                break
+
+        # - Solve subproblems
+        results['subproblems'] = update_subproblems_and_solve(planning_problem, subproblem_models, consensus_vars['master_problem'], dual_vars['master_problem'])
+
+        # - Update ADMM CONSENSUS variables
+        planning_problem.update_admm_consensus_variables(master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
+
+        # - Update primal evolution
+        primal_evolution.append(planning_problem.compute_primal_value(master_problem_model, subproblem_models))
+
+        # 3.3 STOPPING CRITERIA evaluation
+        convergence = planning_problem.check_admm_convergence(consensus_vars, consensus_vars_prev_iter)
+        if convergence:
             break
 
-        # Solve Master problem
-        # - Add Benders' cut for the current iteration
-        # - Obtain the new value of the candidate solution (x), and
-        # - Obtain the value of alpha (lower bound)
-        planning_problem.add_benders_cut(master_problem_model, upper_bound, sensitivities, candidate_solution)
-        print('[INFO] Running MASTER PROBLEM...')
-        results = planning_problem.optimize(master_problem_model, from_warm_start=from_warm_start)
-        if not results.solver.status == po.SolverStatus.ok:
-            print(f'[ERROR] Model {master_problem_model.name} did not converge!')
-            exit(ERROR_OPTIMIZATION)
-        lower_bound = planning_problem.get_lower_bound(master_problem_model)
-        lower_bound_evolution.append(lower_bound)
-        candidate_solution = planning_problem.get_candidate_solution(master_problem_model)
-
-        iter += 1
-        if iter == 1:
-            from_warm_start = True
-
-    end = time.time()
-    print('[INFO] Total execution time: {:.2f} s'.format(end - start))
+        iter_end = time.time()
+        print('[INFO] \t - Iter {}: {:.2f} s'.format(num_iter, iter_end - iter_start))
+        num_iter += 1
 
     if not convergence:
-        print('[WARNING] Convergence not obtained!')
+        print(f'[WARNING] ADMM did NOT converge in {planning_problem.params.num_max_iters} iterations!')
     else:
-        print(f'=================================================== FINAL ==================================================')
-        print('[INFO] Final. LB = {:.3f}, UB = {:.3f}'.format(lower_bound, upper_bound))
-        _print_candidate_solution(candidate_solution)
+        print(f'[INFO] \t - ADMM converged in {iter + 1} iterations.')
 
-    bound_evolution = {'lower_bound': lower_bound_evolution, 'upper_bound': upper_bound_evolution}
-    planning_problem.write_planning_results_to_excel(subproblem_model, results, bound_evolution)
+    end = time.time()
+    total_execution_time = end - start
+    print('[INFO] \t - Total execution time: {:.2f}s.'.format(total_execution_time))
+
+
+def _update_admm_consensus_variables(planning_problem, master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter):
+    _update_previous_consensus_variables(planning_problem, consensus_vars, consensus_vars_prev_iter)
+    _update_consensus_variables(planning_problem, master_problem_model, subproblem_models, consensus_vars, dual_vars)
+
+
+def _update_previous_consensus_variables(planning_problem, consensus_vars, consensus_vars_prev_iter):
+    for node_id in planning_problem.candidate_nodes:
+        for year in planning_problem.years:
+            consensus_vars_prev_iter['master_problem'][node_id][year]['s'] = copy(consensus_vars['master_problem'][node_id][year]['s'])
+            consensus_vars_prev_iter['master_problem'][node_id][year]['e'] = copy(consensus_vars['master_problem'][node_id][year]['e'])
+            consensus_vars_prev_iter['subproblem'][node_id][year]['s'] = copy(consensus_vars['subproblem'][node_id][year]['s'])
+            consensus_vars_prev_iter['subproblem'][node_id][year]['e'] = copy(consensus_vars['subproblem'][node_id][year]['e'])
+
+
+def _update_consensus_variables(planning_problem, master_problem_model, subproblem_models, consensus_vars, dual_vars):
+
+    years = [year for year in planning_problem.years]
+
+    # - Master problem
+    for e in master_problem_model.energy_storages:
+        node_id = planning_problem.candidate_nodes[e]
+        for y in master_problem_model.years:
+            year = years[y]
+            consensus_vars['master_problem'][node_id][year]['s'] = pe.value(master_problem_model.es_s_rated[e, y])
+            consensus_vars['master_problem'][node_id][year]['e'] = pe.value(master_problem_model.es_e_rated[e, y])
+
+    # - Subproblems
+    for year in planning_problem.years:
+        for e in range(len(planning_problem.candidate_nodes)):
+            node_id = planning_problem.candidate_nodes[e]
+            consensus_vars['subproblem'][node_id][year]['s'] = 0.00
+            consensus_vars['subproblem'][node_id][year]['e'] = 0.00
+            for day in planning_problem.days:
+                subproblem_model = subproblem_models[year][day]
+                s_base = planning_problem.network.network[year][day].baseMVA
+                num_days = planning_problem.days[day]
+                consensus_vars['subproblem'][node_id][year]['s'] += pe.value(subproblem_model.es_planning_s_rated[e]) * s_base * (num_days / 365.00)
+                consensus_vars['subproblem'][node_id][year]['e'] += pe.value(subproblem_model.es_planning_e_rated[e]) * s_base * (num_days / 365.00)
+
+    # Update Lambdas
+    for node_id in planning_problem.candidate_nodes:
+        for year in planning_problem.years:
+
+            error_s_rated = consensus_vars['master_problem'][node_id][year]['s'] - consensus_vars['subproblem'][node_id][year]['s']
+            error_e_rated = consensus_vars['master_problem'][node_id][year]['e'] - consensus_vars['subproblem'][node_id][year]['e']
+
+            dual_vars['master_problem'][node_id][year]['s'] += planning_problem.params.rho_s * (error_s_rated)
+            dual_vars['master_problem'][node_id][year]['e'] += planning_problem.params.rho_e * (error_e_rated)
+            dual_vars['master_problem'][node_id][year]['s'] += planning_problem.params.rho_s * (-error_s_rated)
+            dual_vars['master_problem'][node_id][year]['e'] += planning_problem.params.rho_e * (-error_e_rated)
+
+
+def update_subproblems_to_admm(planning_problem, subproblem_models):
+
+    e_max = planning_problem.ess_params.max_capacity
+    s_max = e_max * planning_problem.ess_params.max_se_factor
+
+    for year in planning_problem.years:
+        for day in planning_problem.days:
+
+            subproblem_model = subproblem_models[year][day]
+            init_of_value = pe.value(subproblem_model.objective)
+
+            # Add ADMM variables
+            subproblem_model.rho_s = pe.Var(domain=pe.NonNegativeReals)
+            subproblem_model.rho_s.fix(planning_problem.params.rho_s)
+            subproblem_model.rho_e = pe.Var(domain=pe.NonNegativeReals)
+            subproblem_model.rho_e.fix(planning_problem.params.rho_s)
+
+            subproblem_model.es_s_rated_req = pe.Var(subproblem_model.energy_storages_planning, domain=pe.NonNegativeReals)
+            subproblem_model.es_e_rated_req = pe.Var(subproblem_model.energy_storages_planning, domain=pe.NonNegativeReals)
+            subproblem_model.dual_es_s_rated = pe.Var(subproblem_model.energy_storages_planning, domain=pe.Reals)
+            subproblem_model.dual_es_e_rated = pe.Var(subproblem_model.energy_storages_planning, domain=pe.Reals)
+
+            # Objective function - augmented Lagrangian
+            obj = subproblem_model.objective.expr / max(abs(init_of_value), 1.00)
+
+            # Augmented Lagrangian -- Srated and Erated (residual balancing)
+            for e in subproblem_model.energy_storages_planning:
+                constraint_s_req = (subproblem_model.es_planning_s_rated[e] - subproblem_model.es_s_rated_req[e]) / abs(s_max)
+                constraint_e_req = (subproblem_model.es_planning_e_rated[e] - subproblem_model.es_e_rated_req[e]) / abs(e_max)
+                obj += (subproblem_model.dual_es_s_rated[e]) * (constraint_s_req)
+                obj += (subproblem_model.dual_es_e_rated[e]) * (constraint_e_req)
+                obj += (subproblem_model.rho_s / 2) * (constraint_s_req) ** 2
+                obj += (subproblem_model.rho_e / 2) * (constraint_e_req) ** 2
+
+            subproblem_model.objective.expr = obj
+
+
+def update_subproblems_and_solve(planning_problem, subproblem_models, ess_req, dual_ess):
+
+    print('[INFO] \t\t - Updating subproblems...')
+
+    for year in planning_problem.years:
+        for day in planning_problem.days:
+            subproblem_model = subproblem_models[year][day]
+            s_base = planning_problem.network.network[year][day].baseMVA
+            for e in subproblem_model.energy_storages_planning:
+                node_id = planning_problem.candidate_nodes[e]
+                subproblem_model.dual_es_s_rated[e].fix(dual_ess[node_id][year]['s'] / s_base)
+                subproblem_model.dual_es_e_rated[e].fix(dual_ess[node_id][year]['e'] / s_base)
+                subproblem_model.es_s_rated_req[e].fix(ess_req[node_id][year]['s'] / s_base)
+                subproblem_model.es_e_rated_req[e].fix(ess_req[node_id][year]['e'] / s_base)
+
+    # Solve!
+    res = planning_problem.network.run_operational_planning_problem(subproblem_models)
+    return res
+
+
+
+def update_master_problem_to_admm(planning_problem, master_problem_model):
+
+    init_of_value = planning_problem.ess_params.budget
+    e_max = planning_problem.ess_params.max_capacity
+    s_max = e_max * planning_problem.ess_params.max_se_factor
+
+    # Add ADMM variables
+    master_problem_model.rho_s = pe.Var(domain=pe.NonNegativeReals)
+    master_problem_model.rho_s.fix(planning_problem.params.rho_s)
+    master_problem_model.rho_e = pe.Var(domain=pe.NonNegativeReals)
+    master_problem_model.rho_e.fix(planning_problem.params.rho_s)
+
+    master_problem_model.es_s_rated_req = pe.Var(master_problem_model.energy_storages, master_problem_model.years, domain=pe.NonNegativeReals)
+    master_problem_model.es_e_rated_req = pe.Var(master_problem_model.energy_storages, master_problem_model.years, domain=pe.NonNegativeReals)
+    master_problem_model.dual_es_s_rated = pe.Var(master_problem_model.energy_storages, master_problem_model.years, domain=pe.Reals)
+    master_problem_model.dual_es_e_rated = pe.Var(master_problem_model.energy_storages, master_problem_model.years, domain=pe.Reals)
+
+    # Objective function - augmented Lagrangian
+    obj = master_problem_model.objective.expr / max(abs(init_of_value), 1.00)
+
+    # Augmented Lagrangian -- Srated and Erated (residual balancing)
+    for e in master_problem_model.energy_storages:
+        for y in master_problem_model.years:
+            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
+            constraint_e_req = (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max)
+            obj += (master_problem_model.dual_es_s_rated[e, y]) * (constraint_s_req)
+            obj += (master_problem_model.dual_es_e_rated[e, y]) * (constraint_e_req)
+            obj += (master_problem_model.rho_s / 2) * (constraint_s_req) ** 2
+            obj += (master_problem_model.rho_e / 2) * (constraint_e_req) ** 2
+
+    master_problem_model.objective.expr = obj
+
+
+def update_master_problem_and_solve(planning_problem, master_problem_model, ess_req, dual_ess):
+
+    print('[INFO] \t\t - Updating master problem...')
+    years = [year for year in planning_problem.years]
+
+    for e in master_problem_model.energy_storages:
+        node_id = planning_problem.candidate_nodes[e]
+        for y in master_problem_model.years:
+            year = years[y]
+            master_problem_model.dual_es_s_rated[e, y].fix(dual_ess[node_id][year]['s'])
+            master_problem_model.dual_es_e_rated[e, y].fix(dual_ess[node_id][year]['e'])
+            master_problem_model.es_s_rated_req[e, y].fix(ess_req[node_id][year]['s'])
+            master_problem_model.es_e_rated_req[e, y].fix(ess_req[node_id][year]['e'])
+
+    # Solve!
+    res = planning_problem.optimize(master_problem_model)
+    return res
 
 
 def _build_master_problem_model(planning_problem):
@@ -273,8 +416,8 @@ def _build_master_problem_model(planning_problem):
     # Decision variables
     model.es_s_invesment = pe.Var(model.energy_storages, model.years, domain=pe.NonNegativeReals, initialize=0.0)   # Investment in power capacity in year y
     model.es_e_invesment = pe.Var(model.energy_storages, model.years, domain=pe.NonNegativeReals, initialize=0.0)   # Investment in energy capacity in year y
-    model.es_s_rated = pe.Var(model.energy_storages, model.years, domain=pe.NonNegativeReals)       # Total rated power capacity (considering calendar life)
-    model.es_e_rated = pe.Var(model.energy_storages, model.years, domain=pe.NonNegativeReals)       # Total rated energy capacity (considering calendar life, not considering degradation)
+    model.es_s_rated = pe.Var(model.energy_storages, model.years, domain=pe.NonNegativeReals, initialize=0.0)       # Total rated power capacity (considering calendar life)
+    model.es_e_rated = pe.Var(model.energy_storages, model.years, domain=pe.NonNegativeReals, initialize=0.0)       # Total rated energy capacity (considering calendar life, not considering degradation)
     model.alpha = pe.Var(domain=pe.Reals)                                                           # alpha (associated with cuts) will try to rebuild y in the original problem
     model.alpha.setlb(-1e12)
 
@@ -353,18 +496,30 @@ def _build_master_problem_model(planning_problem):
     return model
 
 
-def _add_benders_cut(planning_problem, model, upper_bound, sensitivities, candidate_solution):
+def _compute_primal_value(planning_problem, master_problem_model, subproblem_models):
+    primal_value = 0.00
+    primal_value += planning_problem.compute_master_problem_primal_value(master_problem_model)
+    primal_value += planning_problem.compute_subproblems_primal_value(subproblem_models)
+    return primal_value
+
+
+def _compute_master_problem_primal_value(planning_problem, master_problem_model):
     years = [year for year in planning_problem.years]
-    benders_cut = upper_bound
-    for e in model.energy_storages:
-        node_id = planning_problem.candidate_nodes[e]
-        for y in model.years:
+    primal_value = 0.00
+    for e in master_problem_model.energy_storages:
+        for y in master_problem_model.years:
             year = years[y]
-            if sensitivities['s'][year][node_id] != 'N/A':
-                benders_cut += sensitivities['s'][year][node_id] * (model.es_s_rated[e, y] - candidate_solution['total_capacity'][year][node_id]['s'])
-            if sensitivities['e'][year][node_id] != 'N/A':
-                benders_cut += sensitivities['e'][year][node_id] * (model.es_e_rated[e, y] - candidate_solution['total_capacity'][year][node_id]['e'])
-    model.benders_cuts.add(model.alpha >= benders_cut)
+            c_inv_s = planning_problem.investment_costs['power_capacity'][year]
+            c_inv_e = planning_problem.investment_costs['energy_capacity'][year]
+            annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
+            primal_value += annualization * pe.value(master_problem_model.es_s_invesment[e, y]) * c_inv_s
+            primal_value += annualization * pe.value(master_problem_model.es_e_invesment[e, y]) * c_inv_e
+    return primal_value
+
+
+def _compute_subproblems_primal_value(planning_problem, subproblem_models):
+    primal_value = planning_problem.network.get_objective_function_value(subproblem_models)
+    return primal_value
 
 
 def _optimize(model, params, from_warm_start=False):
@@ -402,6 +557,43 @@ def _optimize(model, params, from_warm_start=False):
     '''
 
     return result
+
+
+def create_admm_variables(planning_problem):
+
+    consensus_variables = {
+        'master_problem': dict(),
+        'subproblem': dict()
+    }
+
+    dual_variables = {
+        'master_problem': dict(),
+        'subproblem': dict()
+    }
+
+    consensus_variables_prev_iter = {
+        'master_problem': dict(),
+        'subproblem': dict()
+    }
+
+    for node_id in planning_problem.candidate_nodes:
+
+        consensus_variables['master_problem'][node_id] = dict()
+        consensus_variables['subproblem'][node_id] = dict()
+        dual_variables['master_problem'][node_id] = dict()
+        dual_variables['subproblem'][node_id] = dict()
+        consensus_variables_prev_iter['master_problem'][node_id] = dict()
+        consensus_variables_prev_iter['subproblem'][node_id] = dict()
+
+        for year in planning_problem.years:
+            consensus_variables['master_problem'][node_id][year] = {'s': 0.00, 'e': 0.00}
+            consensus_variables['subproblem'][node_id][year] = {'s': 0.00, 'e': 0.00}
+            dual_variables['master_problem'][node_id][year] = {'s': 0.00, 'e': 0.00}
+            dual_variables['subproblem'][node_id][year] = {'s': 0.00, 'e': 0.00}
+            consensus_variables_prev_iter['master_problem'][node_id][year] = {'s': 0.00, 'e': 0.00}
+            consensus_variables_prev_iter['subproblem'][node_id][year] = {'s': 0.00, 'e': 0.00}
+
+    return consensus_variables, dual_variables, consensus_variables_prev_iter
 
 
 # ======================================================================================================================

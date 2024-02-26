@@ -3,6 +3,7 @@ import sys
 import getopt
 from energy_storage_planning import EnergyStoragePlanning
 
+
 # ======================================================================================================================
 #  Read Execution Arguments
 # ======================================================================================================================
@@ -53,16 +54,18 @@ def print_help_message():
 def energy_storage_planning(working_directory, specification_filename):
 
     print('==========================================================================================================')
-    print('                                    ENERGY STORAGE PLANNING (BENDERS\')                                   ')
+    print('                                       ENERGY STORAGE PLANNING (ADMM)                                     ')
     print('==========================================================================================================')
 
     planning_problem = EnergyStoragePlanning(working_directory, specification_filename)
     planning_problem.read_planning_problem()
 
-    planning_problem.run_operational_planning()
-    #planning_problem.run_planning_problem()
+    #planning_problem.run_operational_planning()
+    planning_problem.run_planning_problem()
 
-
+    print('==========================================================================================================')
+    print('                                                  END                                                     ')
+    print('==========================================================================================================')
 
 # ======================================================================================================================
 #  Main

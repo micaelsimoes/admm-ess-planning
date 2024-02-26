@@ -35,12 +35,12 @@ class NetworkData:
                 results[year][day] = self.network[year][day].run_smopf(models[year][day], self.params, from_warm_start=from_warm_start)
         return results
 
-    def build_model(self):
+    def build_model(self, ess_params=dict()):
         network_models = dict()
         for year in self.years:
             network_models[year] = dict()
             for day in self.days:
-                network_models[year][day] = self.network[year][day].build_model(self.candidate_nodes, self.params)
+                network_models[year][day] = self.network[year][day].build_model(self.candidate_nodes, self.params, ess_params=ess_params)
         return network_models
 
     def read_network_data(self):
@@ -52,6 +52,9 @@ class NetworkData:
 
     def process_results(self, model, results=dict()):
         return _process_results(self, model, results)
+
+    def get_objective_function_value(self, models):
+        return _get_objective_function_value(self, models)
 
 
 # ======================================================================================================================
