@@ -263,8 +263,8 @@ def _update_consensus_variables(planning_problem, master_problem_model, subprobl
         node_id = planning_problem.candidate_nodes[e]
         for y in master_problem_model.years:
             year = years[y]
-            consensus_vars['master_problem'][node_id][year]['s'] = pe.value(master_problem_model.es_s_rated[e, y])
-            consensus_vars['master_problem'][node_id][year]['e'] = pe.value(master_problem_model.es_e_rated[e, y])
+            consensus_vars['master_problem'][node_id][year]['s'] = min(pe.value(master_problem_model.es_s_rated[e, y]), 0.00)
+            consensus_vars['master_problem'][node_id][year]['e'] = min(pe.value(master_problem_model.es_e_rated[e, y]), 0.00)
 
     # - Subproblems
     for year in planning_problem.years:
@@ -276,8 +276,8 @@ def _update_consensus_variables(planning_problem, master_problem_model, subprobl
                 subproblem_model = subproblem_models[year][day]
                 s_base = planning_problem.network.network[year][day].baseMVA
                 num_days = planning_problem.days[day]
-                consensus_vars['subproblem'][node_id][year]['s'] += pe.value(subproblem_model.es_planning_s_rated[e]) * s_base * (num_days / 365.00)
-                consensus_vars['subproblem'][node_id][year]['e'] += pe.value(subproblem_model.es_planning_e_rated[e]) * s_base * (num_days / 365.00)
+                consensus_vars['subproblem'][node_id][year]['s'] += min(pe.value(subproblem_model.es_planning_s_rated[e]) * s_base * (num_days / 365.00), 0.00)
+                consensus_vars['subproblem'][node_id][year]['e'] += min(pe.value(subproblem_model.es_planning_e_rated[e]) * s_base * (num_days / 365.00), 0.00)
 
     # Update Lambdas
     for node_id in planning_problem.candidate_nodes:
