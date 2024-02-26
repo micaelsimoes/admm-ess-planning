@@ -169,8 +169,8 @@ def _run_planning_problem(planning_problem):
             for day in days:
                 num_days = planning_problem.days[day]
                 s_base = planning_problem.network.network[year][day].baseMVA
-                s_rated_year += pe.value(subproblem_models[year][day].es_planning_s_rated[e]) * s_base * (num_days / 365.00)
-                e_rated_year += pe.value(subproblem_models[year][day].es_planning_e_rated[e]) * s_base * (num_days / 365.00)
+                s_rated_year += max(pe.value(subproblem_models[year][day].es_planning_s_rated[e]), 0.00) * s_base * (num_days / 365.00)
+                e_rated_year += max(pe.value(subproblem_models[year][day].es_planning_e_rated[e]), 0.00) * s_base * (num_days / 365.00)
             consensus_vars['subproblem'][node_id][year]['s'] = s_rated_year
             consensus_vars['subproblem'][node_id][year]['e'] = e_rated_year
     update_subproblems_to_admm(planning_problem, subproblem_models)
@@ -182,8 +182,8 @@ def _run_planning_problem(planning_problem):
         node_id = planning_problem.candidate_nodes[e]
         for y in range(len(years)):
             year = years[y]
-            s_rated_year = pe.value(master_problem_model.es_s_rated[e, y])
-            e_rated_year = pe.value(master_problem_model.es_e_rated[e, y])
+            s_rated_year = max(pe.value(master_problem_model.es_s_rated[e, y]), 0.00)
+            e_rated_year = max(pe.value(master_problem_model.es_e_rated[e, y]), 0.00)
             consensus_vars['master_problem'][node_id][year]['s'] = s_rated_year
             consensus_vars['master_problem'][node_id][year]['e'] = e_rated_year
     update_master_problem_to_admm(planning_problem, master_problem_model)
@@ -198,7 +198,11 @@ def _run_planning_problem(planning_problem):
 
         iter_start = time.time()
 
+        for node_id in consensus_vars['master_problem']:
+            print(f" - node {node_id} = {consensus_vars['master_problem'][node_id]}")
         results['master_problem'] = update_master_problem_and_solve(planning_problem, master_problem_model, consensus_vars['subproblem'], dual_vars['subproblem'])
+        for node_id in consensus_vars['master_problem']:
+            print(f" - node {node_id} = {consensus_vars['master_problem'][node_id]}")
 
         # - Update ADMM consensus variables
         planning_problem.update_admm_consensus_variables(master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
@@ -213,7 +217,11 @@ def _run_planning_problem(planning_problem):
                 break
 
         # - Solve subproblems
+        for node_id in consensus_vars['subproblem']:
+            print(f" - node {node_id} = {consensus_vars['subproblem'][node_id]}")
         results['subproblems'] = update_subproblems_and_solve(planning_problem, subproblem_models, consensus_vars['master_problem'], dual_vars['master_problem'])
+        for node_id in consensus_vars['subproblem']:
+            print(f" - node {node_id} = {consensus_vars['subproblem'][node_id]}")
 
         # - Update ADMM CONSENSUS variables
         planning_problem.update_admm_consensus_variables(master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
@@ -263,8 +271,8 @@ def _update_consensus_variables(planning_problem, master_problem_model, subprobl
         node_id = planning_problem.candidate_nodes[e]
         for y in master_problem_model.years:
             year = years[y]
-            consensus_vars['master_problem'][node_id][year]['s'] = min(pe.value(master_problem_model.es_s_rated[e, y]), 0.00)
-            consensus_vars['master_problem'][node_id][year]['e'] = min(pe.value(master_problem_model.es_e_rated[e, y]), 0.00)
+            consensus_vars['master_problem'][node_id][year]['s'] = max(pe.value(master_problem_model.es_s_rated[e, y]), 0.00)
+            consensus_vars['master_problem'][node_id][year]['e'] = max(pe.value(master_problem_model.es_e_rated[e, y]), 0.00)
 
     # - Subproblems
     for year in planning_problem.years:
@@ -273,11 +281,11 @@ def _update_consensus_variables(planning_problem, master_problem_model, subprobl
             consensus_vars['subproblem'][node_id][year]['s'] = 0.00
             consensus_vars['subproblem'][node_id][year]['e'] = 0.00
             for day in planning_problem.days:
+                num_days = planning_problem.days[day]
                 subproblem_model = subproblem_models[year][day]
                 s_base = planning_problem.network.network[year][day].baseMVA
-                num_days = planning_problem.days[day]
-                consensus_vars['subproblem'][node_id][year]['s'] += min(pe.value(subproblem_model.es_planning_s_rated[e]) * s_base * (num_days / 365.00), 0.00)
-                consensus_vars['subproblem'][node_id][year]['e'] += min(pe.value(subproblem_model.es_planning_e_rated[e]) * s_base * (num_days / 365.00), 0.00)
+                consensus_vars['subproblem'][node_id][year]['s'] += max(pe.value(subproblem_model.es_planning_s_rated[e]), 0.00) * s_base * (num_days / 365.00)
+                consensus_vars['subproblem'][node_id][year]['e'] += max(pe.value(subproblem_model.es_planning_e_rated[e]), 0.00) * s_base * (num_days / 365.00)
 
     # Update Lambdas
     for node_id in planning_problem.candidate_nodes:
@@ -302,6 +310,7 @@ def update_subproblems_to_admm(planning_problem, subproblem_models):
 
             subproblem_model = subproblem_models[year][day]
             init_of_value = pe.value(subproblem_model.objective)
+            s_base = planning_problem.network.network[year][day].baseMVA
 
             # Add ADMM variables
             subproblem_model.rho_s = pe.Var(domain=pe.NonNegativeReals)
@@ -319,12 +328,12 @@ def update_subproblems_to_admm(planning_problem, subproblem_models):
 
             # Augmented Lagrangian -- Srated and Erated (residual balancing)
             for e in subproblem_model.energy_storages_planning:
-                constraint_s_req = (subproblem_model.es_planning_s_rated[e] - subproblem_model.es_s_rated_req[e]) / abs(s_max)
-                constraint_e_req = (subproblem_model.es_planning_e_rated[e] - subproblem_model.es_e_rated_req[e]) / abs(e_max)
-                obj += (subproblem_model.dual_es_s_rated[e]) * (constraint_s_req)
-                obj += (subproblem_model.dual_es_e_rated[e]) * (constraint_e_req)
-                obj += (subproblem_model.rho_s / 2) * (constraint_s_req) ** 2
-                obj += (subproblem_model.rho_e / 2) * (constraint_e_req) ** 2
+                constraint_s_req = (subproblem_model.es_planning_s_rated[e] - subproblem_model.es_s_rated_req[e]) / abs(s_max / s_base)
+                constraint_e_req = (subproblem_model.es_planning_e_rated[e] - subproblem_model.es_e_rated_req[e]) / abs(e_max / s_base)
+                obj += (subproblem_model.dual_es_s_rated[e]) * constraint_s_req
+                obj += (subproblem_model.dual_es_e_rated[e]) * constraint_e_req
+                obj += (subproblem_model.rho_s / 2) * constraint_s_req ** 2
+                obj += (subproblem_model.rho_e / 2) * constraint_e_req ** 2
 
             subproblem_model.objective.expr = obj
 
@@ -352,6 +361,7 @@ def update_subproblems_and_solve(planning_problem, subproblem_models, ess_req, d
 def update_master_problem_to_admm(planning_problem, master_problem_model):
 
     init_of_value = planning_problem.ess_params.budget
+    years = [year for year in planning_problem.years]
     e_max = planning_problem.ess_params.max_capacity
     s_max = e_max * planning_problem.ess_params.max_se_factor
 
@@ -372,12 +382,13 @@ def update_master_problem_to_admm(planning_problem, master_problem_model):
     # Augmented Lagrangian -- Srated and Erated (residual balancing)
     for e in master_problem_model.energy_storages:
         for y in master_problem_model.years:
-            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
-            constraint_e_req = (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max)
+            annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(years[y]) - int(years[0])))
+            constraint_s_req = years[y] * 365.00 * annualization * (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
+            constraint_e_req = years[y] * 365.00 * annualization * (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max)
             obj += (master_problem_model.dual_es_s_rated[e, y]) * (constraint_s_req)
             obj += (master_problem_model.dual_es_e_rated[e, y]) * (constraint_e_req)
-            obj += (master_problem_model.rho_s / 2) * (constraint_s_req) ** 2
-            obj += (master_problem_model.rho_e / 2) * (constraint_e_req) ** 2
+            obj += (master_problem_model.rho_s / 2) * constraint_s_req ** 2
+            obj += (master_problem_model.rho_e / 2) * constraint_e_req ** 2
 
     master_problem_model.objective.expr = obj
 
@@ -629,48 +640,29 @@ def _consensus_convergence(planning_problem, consensus_vars):
 
 def _stationary_convergence(planning_problem, consensus_vars, consensus_vars_prev_iter):
 
-    rho_pf_tso = params.rho['pf'][planning_problem.transmission_network.name]
-    rho_ess_tso = params.rho['ess'][planning_problem.transmission_network.name]
-    interface_vars = consensus_vars['interface']['pf']
-    shared_ess_vars = consensus_vars['ess']
-    interface_vars_prev_iter = consensus_vars_prev_iter['interface']['pf']
-    shared_ess_vars_prev_iter = consensus_vars_prev_iter['ess']
+    rho_s = planning_problem.params.rho_s
+    rho_e = planning_problem.params.rho_e
     sum_abs = 0.0
     num_elems = 0
 
     # Interface Power Flow
-    for node_id in planning_problem.distribution_networks:
-        rho_pf_dso = params.rho['pf'][planning_problem.distribution_networks[node_id].name]
+    for node_id in planning_problem.candidate_nodes:
         for year in planning_problem.years:
-            for day in planning_problem.days:
-                for p in range(planning_problem.num_instants):
-                    sum_abs += rho_pf_tso * abs(round(interface_vars['tso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['tso'][node_id][year][day]['p'][p], ERROR_PRECISION))
-                    sum_abs += rho_pf_tso * abs(round(interface_vars['tso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['tso'][node_id][year][day]['q'][p], ERROR_PRECISION))
-                    sum_abs += rho_pf_dso * abs(round(interface_vars['dso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['dso'][node_id][year][day]['p'][p], ERROR_PRECISION))
-                    sum_abs += rho_pf_dso * abs(round(interface_vars['dso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(interface_vars_prev_iter['dso'][node_id][year][day]['q'][p], ERROR_PRECISION))
-                    num_elems += 4
+            for p in range(planning_problem.num_instants):
+                sum_abs += rho_s * abs(round(consensus_vars['master_problem'][node_id][year]['s'], ERROR_PRECISION) - round(consensus_vars_prev_iter['master_problem'][node_id][year]['s'], ERROR_PRECISION))
+                sum_abs += rho_e * abs(round(consensus_vars['master_problem'][node_id][year]['e'], ERROR_PRECISION) - round(consensus_vars_prev_iter['master_problem'][node_id][year]['e'], ERROR_PRECISION))
+                sum_abs += rho_s * abs(round(consensus_vars['subproblem'][node_id][year]['s'], ERROR_PRECISION) - round(consensus_vars_prev_iter['subproblem'][node_id][year]['s'], ERROR_PRECISION))
+                sum_abs += rho_e * abs(round(consensus_vars['subproblem'][node_id][year]['e'], ERROR_PRECISION) - round(consensus_vars_prev_iter['subproblem'][node_id][year]['e'], ERROR_PRECISION))
+                num_elems += 4
 
-    # Shared Energy Storage
-    for node_id in planning_problem.distribution_networks:
-        distribution_network = planning_problem.distribution_networks[node_id]
-        rho_ess_dso = params.rho['ess'][distribution_network.name]
-        for year in planning_problem.years:
-            for day in planning_problem.days:
-                for p in range(planning_problem.num_instants):
-                    sum_abs += rho_ess_tso * abs(round(shared_ess_vars['tso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['tso'][node_id][year][day]['p'][p], ERROR_PRECISION))
-                    sum_abs += rho_ess_tso * abs(round(shared_ess_vars['tso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['tso'][node_id][year][day]['q'][p], ERROR_PRECISION))
-                    sum_abs += rho_ess_dso * abs(round(shared_ess_vars['dso'][node_id][year][day]['p'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['dso'][node_id][year][day]['p'][p], ERROR_PRECISION))
-                    sum_abs += rho_ess_dso * abs(round(shared_ess_vars['dso'][node_id][year][day]['q'][p], ERROR_PRECISION) - round(shared_ess_vars_prev_iter['dso'][node_id][year][day]['q'][p], ERROR_PRECISION))
-                    num_elems += 4
-
-    if sum_abs > params.tol * num_elems:
-        if not isclose(sum_abs, params.tol * num_elems, rel_tol=ADMM_CONVERGENCE_REL_TOL, abs_tol=params.tol):
-            print('[INFO]\t\t - Convergence stationary constraints failed. {:.3f} > {:.3f}'.format(sum_abs, params.tol * num_elems))
+    if sum_abs > planning_problem.params.tol * num_elems:
+        if not isclose(sum_abs, planning_problem.params.tol * num_elems, rel_tol=ADMM_CONVERGENCE_REL_TOL, abs_tol=planning_problem.params.tol):
+            print('[INFO]\t\t - Convergence stationary constraints failed. {:.3f} > {:.3f}'.format(sum_abs, planning_problem.params.tol * num_elems))
             return False
-        print('[INFO]\t\t - Convergence stationary constraints considered ok. {:.3f} ~= {:.3f}'.format(sum_abs, params.tol * num_elems))
+        print('[INFO]\t\t - Convergence stationary constraints considered ok. {:.3f} ~= {:.3f}'.format(sum_abs, planning_problem.params.tol * num_elems))
         return True
 
-    print('[INFO]\t\t - Convergence stationary constraints ok. {:.3f} <= {:.3f}'.format(sum_abs, params.tol * num_elems))
+    print('[INFO]\t\t - Convergence stationary constraints ok. {:.3f} <= {:.3f}'.format(sum_abs, planning_problem.params.tol * num_elems))
     return True
 
 
