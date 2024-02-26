@@ -400,8 +400,8 @@ def update_master_problem_and_solve(planning_problem, master_problem_model, ess_
             year = years[y]
             num_years = planning_problem.years[year]
             annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
-            master_problem_model.dual_es_s_rated[e, y].fix(dual_ess[node_id][year]['s'] * num_years * 365.00 * annualization)
-            master_problem_model.dual_es_e_rated[e, y].fix(dual_ess[node_id][year]['e'] * num_years * 365.00 * annualization)
+            master_problem_model.dual_es_s_rated[e, y].fix(dual_ess[node_id][year]['s'] / (num_years * 365.00 * annualization))
+            master_problem_model.dual_es_e_rated[e, y].fix(dual_ess[node_id][year]['e'] / (num_years * 365.00 * annualization))
             master_problem_model.es_s_rated_req[e, y].fix(ess_req[node_id][year]['s'])
             master_problem_model.es_e_rated_req[e, y].fix(ess_req[node_id][year]['e'])
 
