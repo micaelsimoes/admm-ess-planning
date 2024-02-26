@@ -198,11 +198,8 @@ def _run_planning_problem(planning_problem):
 
         iter_start = time.time()
 
-        for node_id in consensus_vars['master_problem']:
-            print(f" - node {node_id} = {consensus_vars['master_problem'][node_id]}")
-        results['master_problem'] = update_master_problem_and_solve(planning_problem, master_problem_model, consensus_vars['subproblem'], dual_vars['subproblem'])
-        for node_id in consensus_vars['master_problem']:
-            print(f" - node {node_id} = {consensus_vars['master_problem'][node_id]}")
+        # - Solve master problem
+        results['master_problem'] = update_master_problem_and_solve(planning_problem, master_problem_model, consensus_vars['subproblem'], dual_vars['master_problem'])
 
         # - Update ADMM consensus variables
         planning_problem.update_admm_consensus_variables(master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
@@ -211,17 +208,13 @@ def _run_planning_problem(planning_problem):
         primal_evolution.append(planning_problem.compute_primal_value(master_problem_model, subproblem_models))
 
         # - Stopping criteria evaluation
-        if iter > 1:
+        if iter >= 1:
             convergence = planning_problem.check_admm_convergence(consensus_vars, consensus_vars_prev_iter)
             if convergence:
                 break
 
         # - Solve subproblems
-        for node_id in consensus_vars['subproblem']:
-            print(f" - node {node_id} = {consensus_vars['subproblem'][node_id]}")
-        results['subproblems'] = update_subproblems_and_solve(planning_problem, subproblem_models, consensus_vars['master_problem'], dual_vars['master_problem'])
-        for node_id in consensus_vars['subproblem']:
-            print(f" - node {node_id} = {consensus_vars['subproblem'][node_id]}")
+        results['subproblems'] = update_subproblems_and_solve(planning_problem, subproblem_models, consensus_vars['master_problem'], dual_vars['subproblem'])
 
         # - Update ADMM CONSENSUS variables
         planning_problem.update_admm_consensus_variables(master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter)
@@ -302,8 +295,10 @@ def update_subproblems_to_admm(planning_problem, subproblem_models):
 
     e_max = planning_problem.ess_params.max_capacity
     s_max = e_max * planning_problem.ess_params.max_se_factor
+    years = [year for year in planning_problem.years]
 
     for year in planning_problem.years:
+        annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
         for day in planning_problem.days:
 
             subproblem_model = subproblem_models[year][day]
@@ -326,8 +321,8 @@ def update_subproblems_to_admm(planning_problem, subproblem_models):
 
             # Augmented Lagrangian -- Srated and Erated (residual balancing)
             for e in subproblem_model.energy_storages_planning:
-                constraint_s_req = (subproblem_model.es_planning_s_rated[e] - subproblem_model.es_s_rated_req[e]) / abs(s_max / s_base)
-                constraint_e_req = (subproblem_model.es_planning_e_rated[e] - subproblem_model.es_e_rated_req[e]) / abs(e_max / s_base)
+                constraint_s_req = (subproblem_model.es_planning_s_rated[e] - subproblem_model.es_s_rated_req[e]) / abs(s_max / s_base) * annualization
+                constraint_e_req = (subproblem_model.es_planning_e_rated[e] - subproblem_model.es_e_rated_req[e]) / abs(e_max / s_base) * annualization
                 obj += (subproblem_model.dual_es_s_rated[e]) * constraint_s_req
                 obj += (subproblem_model.dual_es_e_rated[e]) * constraint_e_req
                 obj += (subproblem_model.rho_s / 2) * constraint_s_req ** 2
@@ -361,6 +356,7 @@ def update_master_problem_to_admm(planning_problem, master_problem_model):
     init_of_value = planning_problem.ess_params.budget
     e_max = planning_problem.ess_params.max_capacity
     s_max = e_max * planning_problem.ess_params.max_se_factor
+    years = [year for year in planning_problem.years]
 
     # Add ADMM variables
     master_problem_model.rho_s = pe.Var(domain=pe.NonNegativeReals)
@@ -379,8 +375,10 @@ def update_master_problem_to_admm(planning_problem, master_problem_model):
     # Augmented Lagrangian -- Srated and Erated (residual balancing)
     for e in master_problem_model.energy_storages:
         for y in master_problem_model.years:
-            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max)
-            constraint_e_req = (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max)
+            year = years[y]
+            annualization = 1 / ((1 + planning_problem.discount_factor) ** (int(year) - int(years[0])))
+            constraint_s_req = (master_problem_model.es_s_rated[e, y] - master_problem_model.es_s_rated_req[e, y]) / abs(s_max) * annualization
+            constraint_e_req = (master_problem_model.es_e_rated[e, y] - master_problem_model.es_e_rated_req[e, y]) / abs(e_max) * annualization
             obj += (master_problem_model.dual_es_s_rated[e, y]) * (constraint_s_req)
             obj += (master_problem_model.dual_es_e_rated[e, y]) * (constraint_e_req)
             obj += (master_problem_model.rho_s / 2) * constraint_s_req ** 2
