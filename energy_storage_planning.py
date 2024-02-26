@@ -804,13 +804,13 @@ def _get_investment_costs_from_excel_file(filename, sheet_name, num_years):
 # ======================================================================================================================
 #  RESULTS - write functions
 # ======================================================================================================================s
-def _write_planning_results_to_excel(planning_problem, results, bound_evolution, filename='operation_planning_results'):
+def _write_planning_results_to_excel(planning_problem, results, primal_evolution, filename='operation_planning_results'):
 
     wb = Workbook()
 
     _write_operational_planning_main_info_to_excel(planning_problem, wb, results)
     _write_ess_planning_specifications(planning_problem, wb, results)
-    _write_bound_evolution_to_excel(wb, bound_evolution)
+    _write_primal_evolution_to_excel(wb, primal_evolution)
 
     # Energy Storages (Planning) results
     _write_energy_storages_planning_results_to_excel(planning_problem, wb, results)
@@ -867,21 +867,18 @@ def _write_operational_planning_results_to_excel(planning_problem, results, file
         wb.save(backup_filename)
 
 
-def _write_bound_evolution_to_excel(workbook, bound_evolution):
+def _write_primal_evolution_to_excel(workbook, primal_evolution):
 
     sheet = workbook.create_sheet('Convergence Characteristic')
 
-    lower_bound = bound_evolution['lower_bound']
-    upper_bound = bound_evolution['upper_bound']
-    num_lines = max(len(upper_bound), len(lower_bound))
+    num_lines = len(primal_evolution)
 
     num_style = '0.00'
 
     # Write header
     line_idx = 1
     sheet.cell(row=line_idx, column=1).value = 'Iteration'
-    sheet.cell(row=line_idx, column=2).value = 'Lower Bound, [NPV Mm.u.]'
-    sheet.cell(row=line_idx, column=3).value = 'Upper Bound, [NPV Mm.u.]'
+    sheet.cell(row=line_idx, column=2).value = 'Primal Value, [NPV Mm.u.]'
 
     # Iterations
     line_idx = 2
@@ -889,18 +886,11 @@ def _write_bound_evolution_to_excel(workbook, bound_evolution):
         sheet.cell(row=line_idx, column=1).value = i
         line_idx += 1
 
-    # Lower bound
+    # Primal value
     line_idx = 2
-    for value in lower_bound:
+    for value in primal_evolution:
         sheet.cell(row=line_idx, column=2).value = value / 1e6
         sheet.cell(row=line_idx, column=2).number_format = num_style
-        line_idx += 1
-
-    # Upper bound
-    line_idx = 2
-    for value in upper_bound:
-        sheet.cell(row=line_idx, column=3).value = value / 1e6
-        sheet.cell(row=line_idx, column=3).number_format = num_style
         line_idx += 1
 
 
