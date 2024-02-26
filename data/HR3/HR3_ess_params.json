@@ -1,5 +1,5 @@
 {
-	"budget": 1e6,
+	"budget": 1e5,
 	"max_capacity": 2.50,
 	"min_se_factor": 0.10,
 	"max_se_factor": 4.00,
