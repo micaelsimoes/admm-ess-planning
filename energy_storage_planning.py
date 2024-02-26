@@ -129,7 +129,7 @@ class EnergyStoragePlanning:
 
     def write_planning_results_to_excel(self, optimization_models, results, primal_evolution):
         filename = os.path.join(self.results_dir, self.name + '_planning_results.xlsx')
-        processed_results = self.network.process_results(optimization_models, results)
+        processed_results = self.network.process_results(optimization_models, results['subproblems'])
         _write_planning_results_to_excel(self, processed_results['results'], primal_evolution, filename=filename)
 
     def write_operational_planning_results_to_excel(self, optimization_models, results):
