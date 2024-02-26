@@ -127,10 +127,10 @@ class EnergyStoragePlanning:
         filename = os.path.join(self.data_dir, self.ess_investment_costs_file)
         self.investment_costs = _get_investment_costs_from_excel_file(filename, 'Investment Cost', len(self.years))
 
-    def write_planning_results_to_excel(self, optimization_models, results, bound_evolution):
+    def write_planning_results_to_excel(self, optimization_models, results, primal_evolution):
         filename = os.path.join(self.results_dir, self.name + '_planning_results.xlsx')
         processed_results = self.network.process_results(optimization_models, results)
-        _write_planning_results_to_excel(self, processed_results['results'], bound_evolution, filename=filename)
+        _write_planning_results_to_excel(self, processed_results['results'], primal_evolution, filename=filename)
 
     def write_operational_planning_results_to_excel(self, optimization_models, results):
         filename = os.path.join(self.results_dir, self.name + '_operational_planning_results.xlsx')
@@ -239,6 +239,8 @@ def _run_planning_problem(planning_problem):
     end = time.time()
     total_execution_time = end - start
     print('[INFO] \t - Total execution time: {:.2f}s.'.format(total_execution_time))
+
+    planning_problem.write_planning_results_to_excel(subproblem_models, results, primal_evolution)
 
 
 def _update_admm_consensus_variables(planning_problem, master_problem_model, subproblem_models, consensus_vars, dual_vars, consensus_vars_prev_iter):
